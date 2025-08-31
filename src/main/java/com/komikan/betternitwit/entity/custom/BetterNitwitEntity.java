@@ -1,12 +1,11 @@
 package com.komikan.betternitwit.entity.custom;
 
+import com.komikan.betternitwit.entity.ModEntities;
 import net.minecraft.core.BlockPos;
-import net.minecraft.core.Holder;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.syncher.EntityDataAccessor;
 import net.minecraft.network.syncher.EntityDataSerializers;
 import net.minecraft.network.syncher.SynchedEntityData;
-import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.sounds.SoundEvent;
 import net.minecraft.sounds.SoundEvents;
@@ -25,6 +24,7 @@ import net.minecraft.world.entity.npc.VillagerData;
 import net.minecraft.world.entity.npc.VillagerProfession;
 import net.minecraft.world.entity.npc.VillagerType;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.trading.MerchantOffer;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
@@ -46,6 +46,9 @@ public class BetterNitwitEntity extends AbstractVillager implements GeoEntity {
     private boolean isPlayingSpecialAnimation = false;
     private String lastAnimation = "";
 
+    // 村人データを保持（AbstractVillagerから削除されたため手動管理）
+    private VillagerData villagerData = new VillagerData(VillagerType.PLAINS, VillagerProfession.NITWIT, 1);
+
     // アニメーション定義
     private static final RawAnimation YAWN = RawAnimation.begin().then("yawn", Animation.LoopType.PLAY_ONCE);
     private static final RawAnimation DOZE_OFF = RawAnimation.begin().then("doze_off", Animation.LoopType.LOOP);
@@ -59,7 +62,7 @@ public class BetterNitwitEntity extends AbstractVillager implements GeoEntity {
         ((GroundPathNavigation) this.getNavigation()).setCanOpenDoors(true);
         this.getNavigation().setCanFloat(true);
         setCanPickUpLoot(true);
-        setVillagerData(getVillagerData().setProfession(VillagerProfession.NITWIT));
+        // villagerDataは初期化時に設定済み
     }
 
     @Override
@@ -87,6 +90,19 @@ public class BetterNitwitEntity extends AbstractVillager implements GeoEntity {
         this.goalSelector.addGoal(6, new LookAtPlayerGoal(this, Player.class, 3.0F, 1.0F));
         this.goalSelector.addGoal(7, new LookAtTradingPlayerGoal(this));
         this.goalSelector.addGoal(8, new RandomLookAroundGoal(this));
+    }
+
+    // ★ 1.21.1で必須になった抽象メソッドの実装
+    @Override
+    protected void updateTrades() {
+        // ニットウィットは取引を行わないため空実装
+        // 必要に応じてカスタム取引ロジックを追加可能
+    }
+
+    @Override
+    protected void rewardTradeXp(net.minecraft.world.item.trading.MerchantOffer offer) {
+        // ニットウィットは取引経験値を付与しないため空実装
+        // 通常の村人では経験値やレベルアップ処理が行われる
     }
 
     public static AttributeSupplier.Builder createAttributes() {
@@ -132,11 +148,11 @@ public class BetterNitwitEntity extends AbstractVillager implements GeoEntity {
     private String determineAnimation(boolean isMoving, boolean isNight, boolean nearWater, boolean nearBed) {
         // 移動中：25%の確率でだらだら歩き
         if (isMoving) {
-            return random.nextFloat() < 0.25f ? "dawdle" : "idle";
+            return random.nextFloat() < 1.0f ? "dawdle" : "idle";
         }
 
         // 座り込み条件
-        if ((nearWater || nearBed) && idleCounter > 40) {
+        if ((nearWater || nearBed) && idleCounter > 20) {
             isPlayingSpecialAnimation = true;
             return "sit_in";
         }
@@ -148,7 +164,7 @@ public class BetterNitwitEntity extends AbstractVillager implements GeoEntity {
         }
 
         // あくび条件（6秒=120tick）
-        if (idleCounter == 120) {
+        if (idleCounter == 60) {
             isPlayingSpecialAnimation = true;
             return "yawn";
         }
@@ -193,14 +209,23 @@ public class BetterNitwitEntity extends AbstractVillager implements GeoEntity {
             idleCounter = 0;
 
             // 1.75秒後（35tick）にアニメーションリセット
-            level().scheduleTick(blockPosition(), Blocks.AIR, 35);
+            level().scheduleTick(blockPosition(), Blocks.AIR, 1);
         }
         return super.mobInteract(player, hand);
     }
 
-    @Override
+    // ★ VillagerData関連メソッド（手動実装）
     public VillagerData getVillagerData() {
-        return super.getVillagerData().setProfession(VillagerProfession.NITWIT);
+        return this.villagerData;
+    }
+
+    public void setVillagerData(VillagerData villagerData) {
+        VillagerData oldData = this.villagerData;
+        this.villagerData = villagerData;
+        // 職業が変更された場合の処理（必要に応じて）
+        if (oldData.getProfession() != villagerData.getProfession()) {
+            // 職業変更時の処理を追加可能
+        }
     }
 
     @Override
@@ -208,6 +233,7 @@ public class BetterNitwitEntity extends AbstractVillager implements GeoEntity {
         super.addAdditionalSaveData(compound);
         compound.putInt("IdleTime", idleCounter);
         compound.putString("CurrentAnimation", entityData.get(CURRENT_ANIMATION));
+        // VillagerDataは再生成時に自動設定されるため保存不要
     }
 
     @Override
@@ -215,6 +241,8 @@ public class BetterNitwitEntity extends AbstractVillager implements GeoEntity {
         super.readAdditionalSaveData(compound);
         idleCounter = compound.getInt("IdleTime");
         entityData.set(CURRENT_ANIMATION, compound.getString("CurrentAnimation"));
+        // VillagerDataは常に固定値で再初期化
+        this.villagerData = new VillagerData(VillagerType.PLAINS, VillagerProfession.NITWIT, 1);
     }
 
     // GeckoLib実装

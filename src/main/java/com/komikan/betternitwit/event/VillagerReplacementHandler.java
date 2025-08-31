@@ -40,7 +40,7 @@ public class VillagerReplacementHandler {
             betterNitwit.setYHeadRot(villager.getYHeadRot());
             betterNitwit.setXRot(villager.getXRot());
 
-            // 村人データをコピー
+            // 村人データをコピー（手動実装したsetVillagerDataメソッドを使用）
             betterNitwit.setVillagerData(villager.getVillagerData());
 
             // 名前をコピー（存在する場合）

@@ -6,7 +6,7 @@ issueTrackerURL="https://github.com/komikan/better-nitwit/issues"
 [[mods]]
 modId="better_nitwit"
 displayName="Better Nitwit"
-version="${mod_version}"
+version="1.0.0"
 authors="komikan"
 credits="Made with GeckoLib and NeoForge"
 description='''
@@ -32,6 +32,6 @@ side="BOTH"
 [[dependencies.better_nitwit]]
 modId="geckolib"
 type="required"
-versionRange="[4.7.3,)"
+versionRange="[4.7.7,)"
 ordering="NONE"
 side="BOTH"
