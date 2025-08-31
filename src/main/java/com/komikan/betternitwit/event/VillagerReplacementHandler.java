@@ -5,6 +5,7 @@ import com.komikan.betternitwit.entity.ModEntities;
 import com.komikan.betternitwit.entity.custom.BetterNitwitEntity;
 import net.minecraft.world.entity.npc.Villager;
 import net.minecraft.world.entity.npc.VillagerProfession;
+import net.neoforged.bus.api.EventPriority;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.neoforge.event.entity.EntityJoinLevelEvent;
 
@@ -16,14 +17,18 @@ public class VillagerReplacementHandler {
     // 処理済みのエンティティを追跡（無限ループ防止）
     private static final Set<UUID> processedEntities = new HashSet<>();
 
-    // 置き換え処理の制限（同一チャンクでの連続処理を防ぐ）
+    // 置き換え処理の制限
     private static long lastReplacementTime = 0;
-    private static final long REPLACEMENT_COOLDOWN = 1000; // 1秒のクールダウン
+    private static final long REPLACEMENT_COOLDOWN = 100; // 0.1秒のクールダウン
 
-    @SubscribeEvent
+    /**
+     * 通常の村人エンティティが追加される際の置き換え処理
+     * 全ての無職村人を確実にBetter Nitwitに置き換え
+     */
+    @SubscribeEvent(priority = EventPriority.HIGHEST) // 最高優先度で確実に捕捉
     public void onEntityJoinLevel(EntityJoinLevelEvent event) {
         // サーバーサイドでのみ実行
-        if (event.getLevel().isClientSide) {
+        if (event.getLevel().isClientSide()) {
             return;
         }
 
@@ -43,18 +48,16 @@ public class VillagerReplacementHandler {
             return;
         }
 
-        // クールダウンチェック（過度な置き換えを防ぐ）
+        // クールダウンチェック（軽量化）
         long currentTime = System.currentTimeMillis();
         if (currentTime - lastReplacementTime < REPLACEMENT_COOLDOWN) {
             return;
         }
 
-        // 自然スポーンの村人のみを対象とする（構造物生成やコマンド生成を除外）
-        if (villager.getSpawnType() != net.minecraft.world.entity.MobSpawnType.NATURAL) {
-            return;
-        }
-
         try {
+            // ★ イベントをキャンセルして元の村人の追加を阻止
+            event.setCanceled(true);
+
             // 処理済みとしてマーク
             processedEntities.add(entityId);
             lastReplacementTime = currentTime;
@@ -65,11 +68,12 @@ public class VillagerReplacementHandler {
                     event.getLevel()
             );
 
-            // 位置と基本データをコピー
+            // 位置と基本データを完全にコピー
             betterNitwit.setPos(villager.getX(), villager.getY(), villager.getZ());
             betterNitwit.setYRot(villager.getYRot());
             betterNitwit.setYHeadRot(villager.getYHeadRot());
             betterNitwit.setXRot(villager.getXRot());
+            betterNitwit.setDeltaMovement(villager.getDeltaMovement());
 
             // 村人データをコピー
             betterNitwit.setVillagerData(villager.getVillagerData());
@@ -77,6 +81,7 @@ public class VillagerReplacementHandler {
             // 名前をコピー（存在する場合）
             if (villager.hasCustomName()) {
                 betterNitwit.setCustomName(villager.getCustomName());
+                betterNitwit.setCustomNameVisible(villager.isCustomNameVisible());
             }
 
             // 年齢をコピー
@@ -87,19 +92,74 @@ public class VillagerReplacementHandler {
             // 健康状態をコピー
             betterNitwit.setHealth(villager.getHealth());
 
-            // スポーンタイプは内部で管理されるため設定不要
+            // 無敵状態をコピー
+            if (villager.isInvulnerable()) {
+                betterNitwit.setInvulnerable(true);
+            }
 
-            // 既存の村人を削除
-            villager.discard();
+            // スポーンタイプに応じた最終化
+            net.minecraft.world.entity.MobSpawnType spawnType = villager.getSpawnType();
+            if (spawnType != null) {
+                betterNitwit.finalizeSpawn(
+                        (net.minecraft.server.level.ServerLevel) event.getLevel(),
+                        event.getLevel().getCurrentDifficultyAt(villager.blockPosition()),
+                        spawnType,
+                        null
+                );
+            }
+
+            // ★ 元の村人が既にワールドに追加されている場合の削除処理
+            if (!villager.isRemoved()) {
+                // 1. 無効状態にマーク
+                villager.setRemoved(net.minecraft.world.entity.Entity.RemovalReason.DISCARDED);
+
+                // 2. 移動とAIを停止
+                villager.getNavigation().stop();
+                villager.goalSelector.removeAllGoals(goal -> true);
+                villager.setDeltaMovement(0, 0, 0);
+
+                // 3. 非表示化
+                villager.setInvisible(true);
+                villager.setSilent(true);
+
+                // 4. 確実に削除
+                villager.discard();
+
+                BetterNitwit.LOGGER.debug("Forcibly removed existing nitwit villager");
+            }
 
             // カスタム村人を追加
             event.getLevel().addFreshEntity(betterNitwit);
 
-            BetterNitwit.LOGGER.debug("Replaced Nitwit villager at {}",
-                    betterNitwit.blockPosition());
+            // ★ 遅延削除処理（1tick後に再度削除を試行）
+            if (event.getLevel() instanceof net.minecraft.server.level.ServerLevel serverLevel) {
+                UUID villagerToRemove = villager.getUUID();
+                serverLevel.getServer().execute(() -> {
+                    try {
+                        // 1tick後に残っている元の村人を再度削除
+                        var remainingVillagers = serverLevel.getEntitiesOfClass(Villager.class,
+                                new net.minecraft.world.phys.AABB(betterNitwit.blockPosition()).inflate(2.0),
+                                v -> v.getUUID().equals(villagerToRemove) &&
+                                        v.getVillagerData().getProfession() == VillagerProfession.NITWIT);
 
-            // メモリ使用量制御（古いエントリを削除）
-            if (processedEntities.size() > 1000) {
+                        for (Villager remaining : remainingVillagers) {
+                            if (!remaining.isRemoved()) {
+                                remaining.setRemoved(net.minecraft.world.entity.Entity.RemovalReason.DISCARDED);
+                                remaining.discard();
+                                BetterNitwit.LOGGER.debug("Removed lingering nitwit villager on delayed cleanup");
+                            }
+                        }
+                    } catch (Exception cleanupEx) {
+                        BetterNitwit.LOGGER.debug("Delayed cleanup failed: {}", cleanupEx.getMessage());
+                    }
+                });
+            }
+
+            BetterNitwit.LOGGER.debug("Successfully replaced Nitwit villager at {} (spawn type: {})",
+                    betterNitwit.blockPosition(), spawnType);
+
+            // メモリ使用量制御
+            if (processedEntities.size() > 500) {
                 processedEntities.clear();
                 BetterNitwit.LOGGER.debug("Cleared processed entities cache");
             }
