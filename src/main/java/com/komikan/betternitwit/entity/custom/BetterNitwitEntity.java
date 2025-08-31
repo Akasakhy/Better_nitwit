@@ -379,10 +379,41 @@ public class BetterNitwitEntity extends AbstractVillager implements GeoEntity {
                                           net.minecraft.world.entity.MobSpawnType spawnType,
                                           BlockPos pos,
                                           net.minecraft.util.RandomSource random) {
-        // 村人と同じスポーン条件
-        return pos.getY() >= level.getSeaLevel() &&
-                level.getBlockState(pos.below()).isValidSpawn(level, pos.below(), entityType) &&
-                level.getRawBrightness(pos, 0) > 8;
+        // 自然スポーンのみを許可（コマンドやスポーンエッグは除外）
+        if (spawnType != net.minecraft.world.entity.MobSpawnType.NATURAL) {
+            return spawnType == net.minecraft.world.entity.MobSpawnType.SPAWN_EGG ||
+                    spawnType == net.minecraft.world.entity.MobSpawnType.COMMAND;
+        }
+
+        // 村人と同様の基本条件
+        if (pos.getY() < level.getSeaLevel() || pos.getY() > level.getMaxBuildHeight() - 10) {
+            return false;
+        }
+
+        // 地面の安定性チェック
+        BlockPos belowPos = pos.below();
+        net.minecraft.world.level.block.state.BlockState groundState = level.getBlockState(belowPos);
+        if (!groundState.isValidSpawn(level, belowPos, entityType)) {
+            return false;
+        }
+
+        // 明るさチェック（村人より厳しく）
+        int lightLevel = level.getRawBrightness(pos, 0);
+        if (lightLevel < 7) { // 村人は8、Better Nitwitは7以上
+            return false;
+        }
+
+        // 確率的なスポーン制限（自然スポーン数を減らす）
+        if (random.nextFloat() > 0.15f) { // 15%の確率でのみスポーン
+            return false;
+        }
+
+        // 周囲のBetter Nitwitの数をチェック（過密防止）
+        int nearbyCount = level.getEntitiesOfClass(BetterNitwitEntity.class,
+                        new net.minecraft.world.phys.AABB(pos).inflate(32.0))
+                .size();
+
+        return nearbyCount < 2; // 32ブロック範囲内に2体まで
     }
 
     // GeckoLib実装

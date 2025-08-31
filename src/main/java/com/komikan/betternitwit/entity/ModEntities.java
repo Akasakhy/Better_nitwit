@@ -13,8 +13,9 @@ public class ModEntities {
             DeferredRegister.create(Registries.ENTITY_TYPE, BetterNitwit.MOD_ID);
 
     public static final DeferredHolder<EntityType<?>, EntityType<BetterNitwitEntity>> BETTER_NITWIT =
-            ENTITIES.register("better_nitwit", () -> EntityType.Builder.of(BetterNitwitEntity::new, MobCategory.CREATURE)
+            ENTITIES.register("better_nitwit", () -> EntityType.Builder.of(BetterNitwitEntity::new, MobCategory.AMBIENT) // CREATUREからAMBIENTに変更
                     .sized(0.6F, 1.95F)
                     .clientTrackingRange(10)
+                    .updateInterval(3) // 更新頻度を調整
                     .build("better_nitwit"));
 }
