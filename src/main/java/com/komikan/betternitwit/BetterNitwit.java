@@ -1,9 +1,11 @@
 package com.komikan.betternitwit;
 
 import com.komikan.betternitwit.client.ClientEventBusSubscriber;
+import com.komikan.betternitwit.creativetab.ModCreativeModeTab;
 import com.komikan.betternitwit.entity.ModEntities;
 import com.komikan.betternitwit.entity.custom.BetterNitwitEntity;
 import com.komikan.betternitwit.event.VillagerReplacementHandler;
+import com.komikan.betternitwit.item.ModItems;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.bus.api.SubscribeEvent;
@@ -26,6 +28,12 @@ public class BetterNitwit {
         // Register entities
         ModEntities.ENTITIES.register(modEventBus);
 
+        // Register items (スポーンエッグ)
+        ModItems.ITEMS.register(modEventBus);
+
+        // Register creative mode tabs
+        ModCreativeModeTab.CREATIVE_MODE_TABS.register(modEventBus);
+
         // Register mod event subscribers
         modEventBus.register(ModEventBusSubscriber.class);
 
@@ -46,6 +54,18 @@ public class BetterNitwit {
         @SubscribeEvent
         public static void onEntityAttributeCreation(EntityAttributeCreationEvent event) {
             event.put(ModEntities.BETTER_NITWIT.get(), BetterNitwitEntity.createAttributes().build());
+        }
+
+        // スポーン配置設定を追加
+        @SubscribeEvent
+        public static void onRegisterSpawnPlacements(net.neoforged.neoforge.event.entity.RegisterSpawnPlacementsEvent event) {
+            event.register(
+                    ModEntities.BETTER_NITWIT.get(),
+                    net.minecraft.world.entity.SpawnPlacementTypes.ON_GROUND,
+                    net.minecraft.world.level.levelgen.Heightmap.Types.MOTION_BLOCKING_NO_LEAVES,
+                    BetterNitwitEntity::checkSpawnRules,
+                    net.neoforged.neoforge.event.entity.RegisterSpawnPlacementsEvent.Operation.REPLACE
+            );
         }
     }
 }

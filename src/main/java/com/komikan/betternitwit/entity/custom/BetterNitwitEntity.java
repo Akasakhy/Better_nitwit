@@ -24,7 +24,6 @@ import net.minecraft.world.entity.npc.VillagerData;
 import net.minecraft.world.entity.npc.VillagerProfession;
 import net.minecraft.world.entity.npc.VillagerType;
 import net.minecraft.world.entity.player.Player;
-import net.minecraft.world.item.trading.MerchantOffer;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
@@ -40,11 +39,21 @@ public class BetterNitwitEntity extends AbstractVillager implements GeoEntity {
             SynchedEntityData.defineId(BetterNitwitEntity.class, EntityDataSerializers.INT);
     private static final EntityDataAccessor<String> CURRENT_ANIMATION =
             SynchedEntityData.defineId(BetterNitwitEntity.class, EntityDataSerializers.STRING);
+    private static final EntityDataAccessor<Boolean> ANIMATION_LOCKED =
+            SynchedEntityData.defineId(BetterNitwitEntity.class, EntityDataSerializers.BOOLEAN);
 
     private final AnimatableInstanceCache cache = GeckoLibUtil.createInstanceCache(this);
     private int idleCounter = 0;
     private boolean isPlayingSpecialAnimation = false;
     private String lastAnimation = "";
+
+    // アニメーション制御用の変数
+    private int animationStartTime = 0;
+    private int animationDuration = 0;
+    private boolean animationLocked = false;
+
+    // AIゴール制御用
+    private boolean goalsDisabled = false;
 
     // 村人データを保持（AbstractVillagerから削除されたため手動管理）
     private VillagerData villagerData = new VillagerData(VillagerType.PLAINS, VillagerProfession.NITWIT, 1);
@@ -62,7 +71,6 @@ public class BetterNitwitEntity extends AbstractVillager implements GeoEntity {
         ((GroundPathNavigation) this.getNavigation()).setCanOpenDoors(true);
         this.getNavigation().setCanFloat(true);
         setCanPickUpLoot(true);
-        // villagerDataは初期化時に設定済み
     }
 
     @Override
@@ -70,6 +78,7 @@ public class BetterNitwitEntity extends AbstractVillager implements GeoEntity {
         super.defineSynchedData(builder);
         builder.define(IDLE_TIME, 0);
         builder.define(CURRENT_ANIMATION, "idle");
+        builder.define(ANIMATION_LOCKED, false);
     }
 
     @Override
@@ -96,13 +105,11 @@ public class BetterNitwitEntity extends AbstractVillager implements GeoEntity {
     @Override
     protected void updateTrades() {
         // ニットウィットは取引を行わないため空実装
-        // 必要に応じてカスタム取引ロジックを追加可能
     }
 
     @Override
     protected void rewardTradeXp(net.minecraft.world.item.trading.MerchantOffer offer) {
         // ニットウィットは取引経験値を付与しないため空実装
-        // 通常の村人では経験値やレベルアップ処理が行われる
     }
 
     public static AttributeSupplier.Builder createAttributes() {
@@ -113,6 +120,13 @@ public class BetterNitwitEntity extends AbstractVillager implements GeoEntity {
 
     @Override
     public void tick() {
+        // アニメーションロック中は移動を強制停止
+        if (entityData.get(ANIMATION_LOCKED)) {
+            // 位置を固定（移動を完全に防ぐ）
+            this.setDeltaMovement(this.getDeltaMovement().multiply(0, 1, 0)); // X,Z軸の移動を0に
+            this.getNavigation().stop(); // ナビゲーション停止
+        }
+
         super.tick();
 
         if (!level().isClientSide) {
@@ -122,51 +136,159 @@ public class BetterNitwitEntity extends AbstractVillager implements GeoEntity {
 
     private void updateAnimationState() {
         boolean isMoving = !this.getNavigation().isDone();
-        boolean isNight = level().isNight();
-        boolean nearWater = isNearWater();
-        boolean nearBed = isNearBed();
 
-        // アイドル時間カウント
-        if (!isMoving && !isPlayingSpecialAnimation) {
-            idleCounter++;
-        } else if (isMoving) {
+        // アニメーションロック中の特別処理
+        if (entityData.get(ANIMATION_LOCKED)) {
+            // 移動を強制停止（追加の安全措置）
+            this.getNavigation().stop();
+            this.setDeltaMovement(this.getDeltaMovement().multiply(0, 1, 0));
+
+            // アニメーション時間経過チェック
+            if (tickCount - animationStartTime >= animationDuration) {
+                endSpecialAnimation();
+            }
+            return; // ロック中は以降の処理をスキップ
+        }
+
+        // 移動開始時のリセット処理
+        if (isMoving) {
             idleCounter = 0;
-            isPlayingSpecialAnimation = false;
+            if (animationLocked) {
+                endSpecialAnimation();
+            }
+        } else {
+            // 停止中のカウント
+            idleCounter++;
         }
 
         // アニメーション決定ロジック
-        String newAnimation = determineAnimation(isMoving, isNight, nearWater, nearBed);
+        String newAnimation = determineAnimation(isMoving);
 
         if (!newAnimation.equals(lastAnimation)) {
             entityData.set(CURRENT_ANIMATION, newAnimation);
             lastAnimation = newAnimation;
+
+            // 特殊アニメーション開始時の設定
+            if (!newAnimation.equals("idle") && !newAnimation.equals("dawdle")) {
+                startSpecialAnimation(newAnimation);
+            }
         }
 
         entityData.set(IDLE_TIME, idleCounter);
     }
 
-    private String determineAnimation(boolean isMoving, boolean isNight, boolean nearWater, boolean nearBed) {
-        // 移動中：25%の確率でだらだら歩き
+    private void startSpecialAnimation(String animationType) {
+        entityData.set(ANIMATION_LOCKED, true);
+        animationLocked = true;
+        isPlayingSpecialAnimation = true;
+        animationStartTime = tickCount;
+
+        // アニメーション別の継続時間設定（tick単位）
+        switch (animationType) {
+            case "yawn" -> animationDuration = 50; // 2.5秒
+            case "deny" -> animationDuration = 35; // 1.75秒
+            case "sit_in" -> {
+                animationDuration = 200; // 5秒間座る
+                // 座り込み中は移動を完全停止
+                this.getNavigation().stop();
+                disableMovementGoals();
+            }
+            case "doze_off" -> {
+                animationDuration = 100; // 5秒間居眠り
+                // 居眠り中も移動を停止
+                this.getNavigation().stop();
+                disableMovementGoals();
+            }
+            default -> animationDuration = 40;
+        }
+    }
+
+    // 移動関連のAIゴールを無効化
+    private void disableMovementGoals() {
+        if (!goalsDisabled) {
+            // より確実な移動停止
+            this.getNavigation().stop();
+            this.getNavigation().setCanFloat(false); // 水中移動も停止
+
+            // 移動系ゴールのみを無効化（Predicateを使用）
+            this.goalSelector.removeAllGoals(goal ->
+                    goal instanceof RandomStrollGoal ||
+                            goal instanceof GolemRandomStrollInVillageGoal ||
+                            goal instanceof MoveThroughVillageGoal ||
+                            goal instanceof RandomLookAroundGoal ||
+                            goal instanceof LookAtPlayerGoal ||
+                            goal instanceof LookAtTradingPlayerGoal
+            );
+            goalsDisabled = true;
+        }
+    }
+
+    // アニメーション終了処理メソッド
+    private void endSpecialAnimation() {
+        entityData.set(ANIMATION_LOCKED, false);
+        entityData.set(CURRENT_ANIMATION, "idle");
+        isPlayingSpecialAnimation = false;
+        animationLocked = false;
+
+        // AIゴールを再登録（移動可能にする）
+        if (goalsDisabled) {
+            restoreMovementGoals();
+            goalsDisabled = false;
+        }
+    }
+
+    // 移動関連のAIゴールを復活
+    private void restoreMovementGoals() {
+        // ナビゲーション機能を復活
+        this.getNavigation().setCanFloat(true);
+
+        // 移動系ゴールのみを再登録
+        this.goalSelector.addGoal(2, new GolemRandomStrollInVillageGoal(this, 0.6));
+        this.goalSelector.addGoal(3, new MoveThroughVillageGoal(this, 0.6, false, 4, () -> false));
+        this.goalSelector.addGoal(4, new GolemRandomStrollInVillageGoal(this, 0.6));
+        this.goalSelector.addGoal(5, new RandomStrollGoal(this, 0.6));
+        this.goalSelector.addGoal(6, new LookAtPlayerGoal(this, Player.class, 3.0F, 1.0F));
+        this.goalSelector.addGoal(7, new LookAtTradingPlayerGoal(this));
+        this.goalSelector.addGoal(8, new RandomLookAroundGoal(this));
+    }
+
+    private String determineAnimation(boolean isMoving) {
+        // 1. 移動中：25%の確率でだらだら歩き
         if (isMoving) {
             return random.nextFloat() < 1.0f ? "dawdle" : "idle";
         }
 
-        // 座り込み条件
-        if ((nearWater || nearBed) && idleCounter > 20) {
-            isPlayingSpecialAnimation = true;
-            return "sit_in";
+        // 2. 座り込み条件：2.5秒停止で1回だけ判定
+        if (idleCounter == 50) { // ちょうど2秒時点で1回だけ判定
+            if (random.nextFloat() < 0.7f) { // 40%の確率
+                return "sit_in";
+            }
         }
 
-        // 居眠り条件（夜間または長時間待機）
-        if ((isNight || idleCounter > 200) && idleCounter > 60) {
-            isPlayingSpecialAnimation = true;
-            return "doze_off";
+        // 3. 居眠り条件：2秒停止で1回だけ判定
+        if (idleCounter == 40) { // ちょうど2秒時点で1回だけ判定
+            if (random.nextFloat() < 0.4f) { // 50%の確率
+                return "doze_off";
+            }
         }
 
-        // あくび条件（6秒=120tick）
-        if (idleCounter == 60) {
-            isPlayingSpecialAnimation = true;
-            return "yawn";
+        // 4. あくび条件：2.0秒停止時に1回だけ判定
+        if (idleCounter == 40) { // ちょうど2.0秒時点で1回だけ判定
+            if (random.nextFloat() < 0.6f) { // 60%の確率
+                return "yawn";
+            }
+        }
+
+        // 5. 長時間停止時の追加判定（10秒以降、5秒ごと）
+        if (idleCounter > 200 && (idleCounter - 200) % 100 == 0) {
+            float chance = random.nextFloat();
+            if (chance < 0.3f) {
+                return "sit_in";
+            } else if (chance < 0.6f) {
+                return "doze_off";
+            } else if (chance < 0.8f) {
+                return "yawn";
+            }
         }
 
         return "idle";
@@ -203,13 +325,12 @@ public class BetterNitwitEntity extends AbstractVillager implements GeoEntity {
     @Override
     public InteractionResult mobInteract(Player player, InteractionHand hand) {
         if (!level().isClientSide) {
-            // 右クリック時に拒否アニメーション
-            entityData.set(CURRENT_ANIMATION, "deny");
-            isPlayingSpecialAnimation = true;
-            idleCounter = 0;
-
-            // 1.75秒後（35tick）にアニメーションリセット
-            level().scheduleTick(blockPosition(), Blocks.AIR, 1);
+            // 右クリック時に拒否アニメーション（ロック機能付き）
+            if (!entityData.get(ANIMATION_LOCKED)) {
+                entityData.set(CURRENT_ANIMATION, "deny");
+                startSpecialAnimation("deny");
+                idleCounter = 0;
+            }
         }
         return super.mobInteract(player, hand);
     }
@@ -233,7 +354,10 @@ public class BetterNitwitEntity extends AbstractVillager implements GeoEntity {
         super.addAdditionalSaveData(compound);
         compound.putInt("IdleTime", idleCounter);
         compound.putString("CurrentAnimation", entityData.get(CURRENT_ANIMATION));
-        // VillagerDataは再生成時に自動設定されるため保存不要
+        compound.putBoolean("AnimationLocked", entityData.get(ANIMATION_LOCKED));
+        compound.putInt("AnimationStartTime", animationStartTime);
+        compound.putInt("AnimationDuration", animationDuration);
+        compound.putBoolean("GoalsDisabled", goalsDisabled);
     }
 
     @Override
@@ -241,8 +365,24 @@ public class BetterNitwitEntity extends AbstractVillager implements GeoEntity {
         super.readAdditionalSaveData(compound);
         idleCounter = compound.getInt("IdleTime");
         entityData.set(CURRENT_ANIMATION, compound.getString("CurrentAnimation"));
+        entityData.set(ANIMATION_LOCKED, compound.getBoolean("AnimationLocked"));
+        animationStartTime = compound.getInt("AnimationStartTime");
+        animationDuration = compound.getInt("AnimationDuration");
+        goalsDisabled = compound.getBoolean("GoalsDisabled");
         // VillagerDataは常に固定値で再初期化
         this.villagerData = new VillagerData(VillagerType.PLAINS, VillagerProfession.NITWIT, 1);
+    }
+
+    // スポーン条件チェック（村人と同じ条件）
+    public static boolean checkSpawnRules(EntityType<BetterNitwitEntity> entityType,
+                                          net.minecraft.world.level.ServerLevelAccessor level,
+                                          net.minecraft.world.entity.MobSpawnType spawnType,
+                                          BlockPos pos,
+                                          net.minecraft.util.RandomSource random) {
+        // 村人と同じスポーン条件
+        return pos.getY() >= level.getSeaLevel() &&
+                level.getBlockState(pos.below()).isValidSpawn(level, pos.below(), entityType) &&
+                level.getRawBrightness(pos, 0) > 8;
     }
 
     // GeckoLib実装
